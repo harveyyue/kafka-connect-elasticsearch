@@ -117,12 +117,23 @@ public class ElasticsearchClient {
   private final Lock inFlightRequestLock = new ReentrantLock();
   private final Condition inFlightRequestsUpdated = inFlightRequestLock.newCondition();
   private final String esVersion;
+  private final ElasticsearchSinkMetrics esSinkMetrics;
 
   @SuppressWarnings("deprecation")
   public ElasticsearchClient(
       ElasticsearchSinkConnectorConfig config,
       ErrantRecordReporter reporter,
       Runnable afterBulkCallback
+  ) {
+    this(config, reporter, afterBulkCallback, null);
+  }
+
+  @SuppressWarnings("deprecation")
+  public ElasticsearchClient(
+      ElasticsearchSinkConnectorConfig config,
+      ErrantRecordReporter reporter,
+      Runnable afterBulkCallback,
+      ElasticsearchSinkMetrics esSinkMetrics
   ) {
     this.bulkExecutorService = Executors.newFixedThreadPool(config.maxInFlightRequests());
     this.numBufferedRecords = new AtomicInteger(0);
@@ -132,6 +143,7 @@ public class ElasticsearchClient {
     this.config = config;
     this.reporter = reporter;
     this.clock = Time.SYSTEM;
+    this.esSinkMetrics = esSinkMetrics;
 
     ConfigCallbackHandler configCallbackHandler = new ConfigCallbackHandler(config);
     RestClient client = RestClient
@@ -451,6 +463,10 @@ public class ElasticsearchClient {
           inFlightRequestsUpdated.signalAll();
         } finally {
           inFlightRequestLock.unlock();
+          if (esSinkMetrics != null) {
+            esSinkMetrics.setMilliSecondsBehindSource(
+                clock.milliseconds() - esSinkMetrics.getEventTimestamp().get());
+          }
         }
       }
     };

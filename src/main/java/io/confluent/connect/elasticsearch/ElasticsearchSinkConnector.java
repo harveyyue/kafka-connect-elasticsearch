@@ -58,9 +58,10 @@ public class ElasticsearchSinkConnector extends SinkConnector {
   @Override
   public List<Map<String, String>> taskConfigs(int maxTasks) {
     List<Map<String, String>> taskConfigs = new ArrayList<>();
-    Map<String, String> taskProps = new HashMap<>();
-    taskProps.putAll(configProperties);
     for (int i = 0; i < maxTasks; i++) {
+      Map<String, String> taskProps = new HashMap<>();
+      taskProps.putAll(configProperties);
+      taskProps.put(ElasticsearchSinkConnectorConfig.TASK_ID, String.valueOf(i));
       taskConfigs.add(taskProps);
     }
     return taskConfigs;

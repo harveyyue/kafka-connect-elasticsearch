@@ -48,6 +48,7 @@ public class ElasticsearchSinkTask extends SinkTask {
   private Set<String> indexCache;
   private OffsetTracker offsetTracker;
   private PartitionPauser partitionPauser;
+  private ElasticsearchSinkMetrics esSinkMetrics;
 
   @Override
   public void start(Map<String, String> props) {
@@ -79,8 +80,10 @@ public class ElasticsearchSinkTask extends SinkTask {
       log.warn("AK versions prior to 2.6 do not support the errant record reporter.");
     }
     Runnable afterBulkCallback = () -> offsetTracker.updateOffsets();
+    this.esSinkMetrics = new ElasticsearchSinkMetrics(config);
+    this.esSinkMetrics.register();
     this.client = client != null ? client
-        : new ElasticsearchClient(config, reporter, afterBulkCallback);
+        : new ElasticsearchClient(config, reporter, afterBulkCallback, esSinkMetrics);
 
     if (!config.flushSynchronously()) {
       this.offsetTracker = new AsyncOffsetTracker(context);
@@ -94,6 +97,9 @@ public class ElasticsearchSinkTask extends SinkTask {
 
   @Override
   public void put(Collection<SinkRecord> records) throws ConnectException {
+    if (records.isEmpty()) {
+      return;
+    }
     log.debug("Putting {} records to Elasticsearch.", records.size());
 
     client.throwIfFailed();
@@ -111,6 +117,7 @@ public class ElasticsearchSinkTask extends SinkTask {
 
       tryWriteRecord(record, offsetState);
     }
+    esSinkMetrics.setEventTimestamp(records.stream().findFirst().get().timestamp());
     partitionPauser.maybePausePartitions();
   }
 
@@ -132,6 +139,7 @@ public class ElasticsearchSinkTask extends SinkTask {
   public void stop() {
     log.debug("Stopping Elasticsearch client.");
     client.close();
+    esSinkMetrics.unregister();
   }
 
   @Override

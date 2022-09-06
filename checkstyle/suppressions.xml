@@ -22,4 +22,10 @@
       files="ElasticsearchSinkConnectorConfig.java"
     />
 
+    <suppress checks="LineLength"
+              files="(Metronome|Metrics).java"/>
+
+    <suppress checks="JavadocParagraph"
+              files="(Metronome|Metrics).java"/>
+
 </suppressions>

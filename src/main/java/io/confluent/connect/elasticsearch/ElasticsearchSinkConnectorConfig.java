@@ -362,6 +362,8 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
   private static final String KERBEROS_GROUP = "Kerberos";
   private static final String DATA_STREAM_GROUP = "Data Stream";
 
+  public static final String TASK_ID = "task.id";
+
   public enum BehaviorOnMalformedDoc {
     IGNORE,
     WARN,
@@ -816,8 +818,13 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
 
   public static final ConfigDef CONFIG = baseConfigDef();
 
+  protected final String connectorName;
+  private final String taskId;
+
   public ElasticsearchSinkConnectorConfig(Map<String, String> props) {
     super(CONFIG, props);
+    this.connectorName = connectorName(props);
+    this.taskId = props.getOrDefault(TASK_ID, "0");
   }
 
   public boolean isAuthenticatedConnection() {
@@ -1011,6 +1018,18 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
     return WriteMethod.valueOf(getString(WRITE_METHOD_CONFIG).toUpperCase());
   }
 
+  public String getContextName() {
+    return "sink";
+  }
+
+  public String getConnectorName() {
+    return this.connectorName;
+  }
+
+  public String getTaskId() {
+    return this.taskId;
+  }
+
   private static class DataStreamDatasetValidator implements Validator {
 
     @Override
@@ -1106,6 +1125,17 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
     public String toString() {
       return "Existing file with " + extension + " extension.";
     }
+  }
+
+  /**
+   * Get the connector's name from the configuration.
+   *
+   * @param connectorProps the connector properties
+   * @return the concatenated string with delimiters
+   */
+  private static String connectorName(Map<?, ?> connectorProps) {
+    Object nameValue = connectorProps.get("name");
+    return nameValue != null ? nameValue.toString() : null;
   }
 
   public static void main(String[] args) {

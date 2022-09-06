@@ -48,9 +48,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 public class DataConverter {
 
@@ -107,7 +110,27 @@ public class DataConverter {
       case INT32:
       case INT64:
       case STRING:
+      case FLOAT32:
+      case FLOAT64:
+      case BOOLEAN:
+      case BYTES:
         return String.valueOf(key);
+      case MAP:
+        Map<Object, Object> result = new TreeMap<>(Comparator.comparing(String::valueOf));
+        result.putAll((Map<Object, Object>) key);
+        return result.values().stream().map(String::valueOf).collect(Collectors.joining("+"));
+      case ARRAY:
+        return ((List<Object>) key).stream().map(String::valueOf).collect(Collectors.joining("+"));
+      case STRUCT:
+        Struct struct = (Struct) key;
+        if (!struct.schema().equals(keySchema)) {
+          throw new DataException("Mismatching schema.");
+        }
+        List<String> list = new ArrayList<>();
+        for (Field field : keySchema.fields()) {
+          list.add(convertKey(field.schema(), struct.get(field)));
+        }
+        return list.stream().collect(Collectors.joining("+"));
       default:
         throw new DataException(schemaType.name() + " is not supported as the document id.");
     }
