@@ -51,8 +51,8 @@ import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.client.RestClient;
+import org.elasticsearch.client.RestClientBuilder;
 import org.elasticsearch.client.RestHighLevelClient;
-import org.elasticsearch.client.RestHighLevelClientBuilder;
 import org.elasticsearch.client.core.MainResponse;
 import org.elasticsearch.client.indices.CreateDataStreamRequest;
 import org.elasticsearch.client.indices.CreateIndexRequest;
@@ -61,7 +61,7 @@ import org.elasticsearch.client.indices.GetMappingsRequest;
 import org.elasticsearch.client.indices.GetMappingsResponse;
 import org.elasticsearch.client.indices.PutMappingRequest;
 import org.elasticsearch.cluster.metadata.MappingMetadata;
-import org.elasticsearch.core.TimeValue;
+import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.index.VersionType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -146,25 +146,27 @@ public class ElasticsearchClient {
     this.esSinkMetrics = esSinkMetrics;
 
     ConfigCallbackHandler configCallbackHandler = new ConfigCallbackHandler(config);
-    RestClient client = RestClient
+    RestClientBuilder restClientBuilder = RestClient
         .builder(
             config.connectionUrls()
                 .stream()
                 .map(HttpHost::create)
                 .collect(toList())
                 .toArray(new HttpHost[config.connectionUrls().size()])
-        ).setHttpClientConfigCallback(configCallbackHandler).build();
+        ).setHttpClientConfigCallback(configCallbackHandler);
 
-    esVersion = getServerVersion(client);
+    // esVersion = getServerVersion(client);
 
-    RestHighLevelClientBuilder clientBuilder = new RestHighLevelClientBuilder(client);
+    // RestHighLevelClientBuilder clientBuilder = new RestHighLevelClientBuilder(client);
 
-    if (shouldSetCompatibilityToES8()) {
-      log.info("Staring client in ES 8 compatibility mode");
-      clientBuilder.setApiCompatibilityMode(true);
-    }
+    // if (shouldSetCompatibilityToES8()) {
+    //   log.info("Staring client in ES 8 compatibility mode");
+    //   clientBuilder.setApiCompatibilityMode(true);
+    // }
 
-    this.client = clientBuilder.build();
+    // this.client = clientBuilder.build();
+    this.client = new RestHighLevelClient(restClientBuilder);
+    this.esVersion = getServerVersion();
 
     this.bulkProcessor = BulkProcessor
         .builder(buildConsumer(), buildListener(afterBulkCallback))
@@ -189,11 +191,11 @@ public class ElasticsearchClient {
         && Integer.parseInt(version().split("\\.")[0]) >= 8;
   }
 
-  private String getServerVersion(RestClient client) {
-    RestHighLevelClient highLevelClient = new RestHighLevelClientBuilder(client).build();
+  private String getServerVersion(RestClientBuilder restClientBuilder) {
+    // RestHighLevelClient highLevelClient = new RestHighLevelClientBuilder(client).build();
     MainResponse response;
     String esVersionNumber = UNKNOWN_VERSION_TAG;
-    try {
+    try (RestHighLevelClient highLevelClient = new RestHighLevelClient(restClientBuilder)) {
       response = highLevelClient.info(RequestOptions.DEFAULT);
       esVersionNumber = response.getVersion().getNumber();
     } catch (Exception e) {
@@ -203,6 +205,15 @@ public class ElasticsearchClient {
       log.warn("Failed to get ES server version", e);
     }
     return esVersionNumber;
+  }
+
+  private String getServerVersion() {
+    try {
+      MainResponse response = client.info(RequestOptions.DEFAULT);
+      return response.getVersion().getNumber();
+    } catch (IOException e) {
+      throw new ConnectException("Failed to get ES server version", e);
+    }
   }
 
   private BiConsumer<BulkRequest, ActionListener<BulkResponse>> buildConsumer() {

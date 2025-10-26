@@ -15,10 +15,10 @@
 
 package io.confluent.connect.elasticsearch.helper;
 
-import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import co.elastic.clients.elasticsearch.indices.GetDataStreamRequest.Builder;
-import co.elastic.clients.json.jackson.JacksonJsonpMapper;
-import co.elastic.clients.transport.rest_client.RestClientTransport;
+//import co.elastic.clients.elasticsearch.ElasticsearchClient;
+//import co.elastic.clients.elasticsearch.indices.GetDataStreamRequest.Builder;
+//import co.elastic.clients.json.jackson.JacksonJsonpMapper;
+//import co.elastic.clients.transport.rest_client.RestClientTransport;
 import org.apache.http.HttpHost;
 import org.apache.kafka.test.TestUtils;
 import org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest;
@@ -26,7 +26,6 @@ import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.client.RestClient;
 import org.elasticsearch.client.RestHighLevelClient;
-import org.elasticsearch.client.RestHighLevelClientBuilder;
 import org.elasticsearch.client.core.CountRequest;
 import org.elasticsearch.client.indices.CreateIndexRequest;
 import org.elasticsearch.client.indices.DataStream;
@@ -44,7 +43,7 @@ import org.elasticsearch.client.security.user.User;
 import org.elasticsearch.client.security.user.privileges.Role;
 import org.elasticsearch.cluster.metadata.MappingMetadata;
 import org.elasticsearch.search.SearchHits;
-import org.elasticsearch.xcontent.XContentType;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -68,28 +67,33 @@ public class ElasticsearchHelperClient {
     ConfigCallbackHandler configCallbackHandler = new ConfigCallbackHandler(config);
     this.url = url;
     this.config = config;
-    this.client = new RestHighLevelClientBuilder(
-        RestClient
-            .builder(HttpHost.create(url))
-            .setHttpClientConfigCallback(configCallbackHandler)
-        .build()
-        // compatibility mode should be true for 7.17 high level rest clients while talking to ES 8.
-    ).setApiCompatibilityMode(compatibilityMode).build();
+    // this.client = new RestHighLevelClientBuilder(
+    //     RestClient
+    //         .builder(HttpHost.create(url))
+    //         .setHttpClientConfigCallback(configCallbackHandler)
+    //     .build()
+    //     // compatibility mode should be true for 7.17 high level rest clients while talking to ES 8.
+    // ).setApiCompatibilityMode(compatibilityMode).build();
+     this.client = new RestHighLevelClient(
+         RestClient
+             .builder(HttpHost.create(url))
+             .setHttpClientConfigCallback(configCallbackHandler)
+     );
   }
 
   public ElasticsearchHelperClient(String url, ElasticsearchSinkConnectorConfig config) {
     this(url, config, false);
   }
 
-  public ElasticsearchClient getNewJavaAPIClient() {
-    ConfigCallbackHandler configCallbackHandler = new ConfigCallbackHandler(config);
-    RestClient client = RestClient
-        .builder(HttpHost.create(url))
-        .setHttpClientConfigCallback(configCallbackHandler)
-        .build();
-    return new ElasticsearchClient(new RestClientTransport(
-        client, new JacksonJsonpMapper()));
-  }
+  // public ElasticsearchClient getNewJavaAPIClient() {
+  //   ConfigCallbackHandler configCallbackHandler = new ConfigCallbackHandler(config);
+  //   RestClient client = RestClient
+  //       .builder(HttpHost.create(url))
+  //       .setHttpClientConfigCallback(configCallbackHandler)
+  //       .build();
+  //   return new ElasticsearchClient(new RestClientTransport(
+  //       client, new JacksonJsonpMapper()));
+  // }
 
   public void deleteIndex(String index, boolean isDataStream) throws IOException {
     if (isDataStream) {
@@ -109,17 +113,17 @@ public class ElasticsearchHelperClient {
     return datastreams.size() == 0 ? null : datastreams.get(0);
   }
 
-  public co.elastic.clients.elasticsearch.indices.DataStream getDataStreamWithJavaAPIClient(
-      String dataStream
-  ) throws IOException {
-    List<co.elastic.clients.elasticsearch.indices.DataStream> dataStreams =
-        getNewJavaAPIClient().indices().getDataStream(
-            new Builder()
-                .name(dataStream)
-                .build()
-        ).dataStreams();
-    return dataStreams.size() == 0 ? null : dataStreams.get(0);
-  }
+  // public co.elastic.clients.elasticsearch.indices.DataStream getDataStreamWithJavaAPIClient(
+  //     String dataStream
+  // ) throws IOException {
+  //   List<co.elastic.clients.elasticsearch.indices.DataStream> dataStreams =
+  //       getNewJavaAPIClient().indices().getDataStream(
+  //           new Builder()
+  //               .name(dataStream)
+  //               .build()
+  //       ).dataStreams();
+  //   return dataStreams.size() == 0 ? null : dataStreams.get(0);
+  // }
 
   public long getDocCount(String index) throws IOException {
     CountRequest request = new CountRequest(index);
