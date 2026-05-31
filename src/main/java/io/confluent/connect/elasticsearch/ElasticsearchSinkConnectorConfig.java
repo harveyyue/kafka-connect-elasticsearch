@@ -289,6 +289,14 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
   // Ssl configs
   public static final String SSL_CONFIG_PREFIX = "elastic.https.";
 
+  public static final String SSL_TRUST_ALL_CONFIG = "elastic.https.ssl.trust.all";
+  private static final String SSL_TRUST_ALL_DOC =
+      "Whether to skip SSL certificate verification when connecting to Elasticsearch."
+          + " If set to true, all certificates will be trusted (similar to curl -k)."
+          + " This should only be used for testing or internal environments.";
+  private static final String SSL_TRUST_ALL_DISPLAY = "Trust All Certificates";
+  private static final boolean SSL_TRUST_ALL_DEFAULT = false;
+
   public static final String SECURITY_PROTOCOL_CONFIG = "elastic.security.protocol";
   private static final String SECURITY_PROTOCOL_DOC =
       "The security protocol to use when connecting to Elasticsearch. Values can be `PLAINTEXT` or"
@@ -355,12 +363,54 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
   private static final String DATA_STREAM_TIMESTAMP_DISPLAY = "Data Stream Timestamp Field";
   private static final String DATA_STREAM_TIMESTAMP_DEFAULT = "";
 
+  // Index shard configs
+  public static final String TOPIC_INDEX_MAP_CONFIG = "topic.index.map";
+  private static final String TOPIC_INDEX_MAP_DOC =
+      "A comma-separated list of topic-to-index mappings in the form ``topic:index``. "
+          + "When a topic has a mapping, the mapped index name is used instead of the topic name. "
+          + "Topics not listed in this mapping will use the default topic-to-index conversion.";
+  private static final String TOPIC_INDEX_MAP_DISPLAY = "Topic to Index Map";
+  private static final String TOPIC_INDEX_MAP_DEFAULT = "";
+
+  public static final String INDEX_NAMING_STRATEGY_CONFIG = "index.naming.strategy";
+  private static final String INDEX_NAMING_STRATEGY_DOC =
+      "The fully-qualified class name of the index naming strategy. "
+          + "The class must implement "
+          + "``io.confluent.connect.elasticsearch.strategy.IndexNamingStrategy``.";
+  private static final String INDEX_NAMING_STRATEGY_DISPLAY = "Index Naming Strategy";
+  private static final String INDEX_NAMING_STRATEGY_DEFAULT =
+      "io.confluent.connect.elasticsearch.strategy.DefaultIndexNamingStrategy";
+
+  public static final String INDEX_SHARD_DATE_FIELD_MAP_CONFIG = "index.shard.date.field.map";
+  private static final String INDEX_SHARD_DATE_FIELD_MAP_DOC =
+      "Per-topic timestamp field mapping for index sharding. "
+          + "Format: ``topic1:field1,topic2:field2``. "
+          + "Topics not listed here will not have time-based index sharding.";
+  private static final String INDEX_SHARD_DATE_FIELD_MAP_DISPLAY = "Index Shard Date Field Map";
+  private static final String INDEX_SHARD_DATE_FIELD_MAP_DEFAULT = "";
+
+  public static final String INDEX_SHARD_DATE_PATTERN_MAP_CONFIG = "index.shard.date.pattern.map";
+  private static final String INDEX_SHARD_DATE_PATTERN_MAP_DOC =
+      "Per-topic date pattern mapping for index sharding. "
+          + "Format: ``topic1:yyyyMM,topic2:yyyy``. "
+          + "Supported patterns: ``yyyy``, ``yyyyMM``, ``yyyyMMdd``. "
+          + "Topics not listed here default to ``yyyyMMdd``.";
+  private static final String INDEX_SHARD_DATE_PATTERN_MAP_DISPLAY = "Index Shard Date Pattern Map";
+  private static final String INDEX_SHARD_DATE_PATTERN_MAP_DEFAULT = "";
+
+  public static final String INDEX_SHARD_DATE_TIMEZONE_CONFIG = "index.shard.date.timezone";
+  private static final String INDEX_SHARD_DATE_TIMEZONE_DOC =
+      "The timezone used to format the timestamp for index sharding. Default is ``UTC``.";
+  private static final String INDEX_SHARD_DATE_TIMEZONE_DISPLAY = "Index Shard Date Timezone";
+  private static final String INDEX_SHARD_DATE_TIMEZONE_DEFAULT = "UTC";
+
   private static final String CONNECTOR_GROUP = "Connector";
   private static final String DATA_CONVERSION_GROUP = "Data Conversion";
   private static final String PROXY_GROUP = "Proxy";
   private static final String SSL_GROUP = "Security";
   private static final String KERBEROS_GROUP = "Kerberos";
   private static final String DATA_STREAM_GROUP = "Data Stream";
+  private static final String INDEX_SHARD_GROUP = "Index Shard";
 
   public static final String TASK_ID = "task.id";
 
@@ -400,6 +450,7 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
     addSslConfigs(configDef);
     addKerberosConfigs(configDef);
     addDataStreamConfigs(configDef);
+    addIndexShardConfigs(configDef);
     return configDef;
   }
 
@@ -747,6 +798,17 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
         SECURITY_PROTOCOL_DISPLAY,
         new EnumRecommender<>(SecurityProtocol.class)
     );
+    configDef.define(
+        SSL_TRUST_ALL_CONFIG,
+        Type.BOOLEAN,
+        SSL_TRUST_ALL_DEFAULT,
+        Importance.MEDIUM,
+        SSL_TRUST_ALL_DOC,
+        SSL_GROUP,
+        ++order,
+        Width.SHORT,
+        SSL_TRUST_ALL_DISPLAY
+    );
     configDef.embed(SSL_CONFIG_PREFIX, SSL_GROUP, configDef.configKeys().size() + 2, sslConfigDef);
   }
 
@@ -816,6 +878,62 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
     );
   }
 
+  private static void addIndexShardConfigs(ConfigDef configDef) {
+    int order = 0;
+    configDef
+        .define(
+            INDEX_NAMING_STRATEGY_CONFIG,
+            Type.STRING,
+            INDEX_NAMING_STRATEGY_DEFAULT,
+            Importance.MEDIUM,
+            INDEX_NAMING_STRATEGY_DOC,
+            INDEX_SHARD_GROUP,
+            ++order,
+            Width.LONG,
+            INDEX_NAMING_STRATEGY_DISPLAY
+        ).define(
+            TOPIC_INDEX_MAP_CONFIG,
+            Type.STRING,
+            TOPIC_INDEX_MAP_DEFAULT,
+            Importance.MEDIUM,
+            TOPIC_INDEX_MAP_DOC,
+            INDEX_SHARD_GROUP,
+            ++order,
+            Width.LONG,
+            TOPIC_INDEX_MAP_DISPLAY
+        ).define(
+            INDEX_SHARD_DATE_FIELD_MAP_CONFIG,
+            Type.STRING,
+            INDEX_SHARD_DATE_FIELD_MAP_DEFAULT,
+            Importance.MEDIUM,
+            INDEX_SHARD_DATE_FIELD_MAP_DOC,
+            INDEX_SHARD_GROUP,
+            ++order,
+            Width.LONG,
+            INDEX_SHARD_DATE_FIELD_MAP_DISPLAY
+        ).define(
+            INDEX_SHARD_DATE_PATTERN_MAP_CONFIG,
+            Type.STRING,
+            INDEX_SHARD_DATE_PATTERN_MAP_DEFAULT,
+            Importance.MEDIUM,
+            INDEX_SHARD_DATE_PATTERN_MAP_DOC,
+            INDEX_SHARD_GROUP,
+            ++order,
+            Width.LONG,
+            INDEX_SHARD_DATE_PATTERN_MAP_DISPLAY
+        ).define(
+            INDEX_SHARD_DATE_TIMEZONE_CONFIG,
+            Type.STRING,
+            INDEX_SHARD_DATE_TIMEZONE_DEFAULT,
+            Importance.LOW,
+            INDEX_SHARD_DATE_TIMEZONE_DOC,
+            INDEX_SHARD_GROUP,
+            ++order,
+            Width.SHORT,
+            INDEX_SHARD_DATE_TIMEZONE_DISPLAY
+    );
+  }
+
   public static final ConfigDef CONFIG = baseConfigDef();
 
   protected final String connectorName;
@@ -858,6 +976,10 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
         getString(SSL_CONFIG_PREFIX + SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG);
     return sslEndpointIdentificationAlgorithm != null
         && sslEndpointIdentificationAlgorithm.isEmpty();
+  }
+
+  public boolean sslTrustAll() {
+    return getBoolean(SSL_TRUST_ALL_CONFIG);
   }
 
   public boolean shouldIgnoreKey(String topic) {
@@ -1016,6 +1138,26 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
 
   public WriteMethod writeMethod() {
     return WriteMethod.valueOf(getString(WRITE_METHOD_CONFIG).toUpperCase());
+  }
+
+  public String indexNamingStrategy() {
+    return getString(INDEX_NAMING_STRATEGY_CONFIG);
+  }
+
+  public String topicIndexMap() {
+    return getString(TOPIC_INDEX_MAP_CONFIG);
+  }
+
+  public String indexShardDateFieldMap() {
+    return getString(INDEX_SHARD_DATE_FIELD_MAP_CONFIG);
+  }
+
+  public String indexShardDatePatternMap() {
+    return getString(INDEX_SHARD_DATE_PATTERN_MAP_CONFIG);
+  }
+
+  public String indexShardDateTimezone() {
+    return getString(INDEX_SHARD_DATE_TIMEZONE_CONFIG);
   }
 
   public String getContextName() {

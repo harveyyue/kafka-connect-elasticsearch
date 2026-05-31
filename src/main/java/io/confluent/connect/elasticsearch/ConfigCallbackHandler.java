@@ -17,14 +17,20 @@ package io.confluent.connect.elasticsearch;
 
 import com.sun.security.auth.module.Krb5LoginModule;
 import java.security.AccessController;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
 import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import javax.security.auth.Subject;
 import javax.security.auth.kerberos.KerberosPrincipal;
 import javax.security.auth.login.AppConfigurationEntry;
@@ -86,14 +92,14 @@ public class ConfigCallbackHandler implements HttpClientConfigCallback {
   @Override
   public HttpAsyncClientBuilder customizeHttpClient(HttpAsyncClientBuilder builder) {
     RequestConfig requestConfig = RequestConfig.custom()
-            .setContentCompressionEnabled(config.compression())
-            .setConnectTimeout(config.connectionTimeoutMs())
-            .setConnectionRequestTimeout(config.readTimeoutMs())
-            .setSocketTimeout(config.readTimeoutMs())
-            .build();
+        .setContentCompressionEnabled(config.compression())
+        .setConnectTimeout(config.connectionTimeoutMs())
+        .setConnectionRequestTimeout(config.readTimeoutMs())
+        .setSocketTimeout(config.readTimeoutMs())
+        .build();
 
     builder.setConnectionManager(createConnectionManager())
-            .setDefaultRequestConfig(requestConfig);
+        .setDefaultRequestConfig(requestConfig);
 
     configureAuthentication(builder);
 
@@ -158,15 +164,16 @@ public class ConfigCallbackHandler implements HttpClientConfigCallback {
     try {
       PoolingNHttpClientConnectionManager cm;
       IOReactorConfig ioReactorConfig = IOReactorConfig.custom()
-              .setConnectTimeout(config.connectionTimeoutMs())
-              .setSoTimeout(config.readTimeoutMs())
-              .build();
+          .setConnectTimeout(config.connectionTimeoutMs())
+          .setSoTimeout(config.readTimeoutMs())
+          .build();
       ConnectingIOReactor ioReactor = new DefaultConnectingIOReactor(ioReactorConfig);
 
       if (config.isSslEnabled()) {
-        HostnameVerifier hostnameVerifier = config.shouldDisableHostnameVerification()
-            ? new NoopHostnameVerifier()
-            : SSLConnectionSocketFactory.getDefaultHostnameVerifier();
+        HostnameVerifier hostnameVerifier =
+            (config.shouldDisableHostnameVerification() || config.sslTrustAll())
+                ? new NoopHostnameVerifier()
+                : SSLConnectionSocketFactory.getDefaultHostnameVerifier();
         Registry<SchemeIOSessionStrategy> reg = RegistryBuilder.<SchemeIOSessionStrategy>create()
             .register("http", NoopIOSessionStrategy.INSTANCE)
             .register("https", new SSLIOSessionStrategy(sslContext(), hostnameVerifier))
@@ -185,8 +192,8 @@ public class ConfigCallbackHandler implements HttpClientConfigCallback {
       cm.setMaxTotal(maxPerRoute * config.connectionUrls().size());
 
       log.debug("Connection pool config: maxPerRoute: {}, maxTotal {}",
-              cm.getDefaultMaxPerRoute(),
-              cm.getMaxTotal());
+          cm.getDefaultMaxPerRoute(),
+          cm.getMaxTotal());
 
       return cm;
     } catch (IOReactorException e) {
@@ -244,9 +251,10 @@ public class ConfigCallbackHandler implements HttpClientConfigCallback {
    * @param builder the HttpAsyncClientBuilder
    */
   private void configureSslContext(HttpAsyncClientBuilder builder) {
-    HostnameVerifier hostnameVerifier = config.shouldDisableHostnameVerification()
-        ? new NoopHostnameVerifier()
-        : SSLConnectionSocketFactory.getDefaultHostnameVerifier();
+    HostnameVerifier hostnameVerifier =
+        (config.shouldDisableHostnameVerification() || config.sslTrustAll())
+            ? new NoopHostnameVerifier()
+            : SSLConnectionSocketFactory.getDefaultHostnameVerifier();
 
     SSLContext sslContext = sslContext();
     builder.setSSLContext(sslContext);
@@ -258,6 +266,10 @@ public class ConfigCallbackHandler implements HttpClientConfigCallback {
    * Gets the SslContext for the client.
    */
   private SSLContext sslContext() {
+    if (config.sslTrustAll()) {
+      return trustAllSslContext();
+    }
+
     SslFactory sslFactory = new SslFactory(Mode.CLIENT, null, false);
     sslFactory.configure(config.sslConfigs());
 
@@ -295,6 +307,33 @@ public class ConfigCallbackHandler implements HttpClientConfigCallback {
       } catch (Exception ex) {
         throw new ConnectException("Could not create SSLContext.", ex);
       }
+    }
+  }
+
+  private SSLContext trustAllSslContext() {
+    try {
+      TrustManager[] trustAllCerts = new TrustManager[]{
+          new X509TrustManager() {
+            @Override
+            public void checkClientTrusted(X509Certificate[] chain, String authType) {
+            }
+
+            @Override
+            public void checkServerTrusted(X509Certificate[] chain, String authType) {
+            }
+
+            @Override
+            public X509Certificate[] getAcceptedIssuers() {
+              return new X509Certificate[0];
+            }
+          }
+      };
+      SSLContext sslContext = SSLContext.getInstance("TLS");
+      sslContext.init(null, trustAllCerts, new SecureRandom());
+      log.warn("SSL trust-all mode enabled. Certificate verification is disabled.");
+      return sslContext;
+    } catch (NoSuchAlgorithmException | KeyManagementException e) {
+      throw new ConnectException("Failed to create trust-all SSLContext.", e);
     }
   }
 

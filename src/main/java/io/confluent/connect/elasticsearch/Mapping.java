@@ -15,7 +15,6 @@
 
 package io.confluent.connect.elasticsearch;
 
-import java.math.BigDecimal;
 import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.data.Field;
@@ -28,6 +27,9 @@ import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.util.Objects;
+import java.util.Optional;
 
 public class Mapping {
 
@@ -54,6 +56,11 @@ public class Mapping {
   private static final String PROPERTIES_FIELD = "properties";
   private static final String TYPE_FIELD = "type";
   public static final String VALUE_FIELD = "value";
+
+  // Debezium types
+  private static final String SCHEMA_PARAMETER_COLUMN_TYPE = "__debezium.source.column.type";
+  private static final String DATETIME_TYPE = "DATETIME";
+  private static final String TIMESTAMP_TYPE = "TIMESTAMP";
 
   /**
    * Build mapping from the provided schema.
@@ -100,6 +107,13 @@ public class Mapping {
         return buildStruct(schema, builder);
 
       default:
+        Optional<String> originalDataType =
+            getSchemaParameter(schema, SCHEMA_PARAMETER_COLUMN_TYPE);
+        if (originalDataType.isPresent()
+            && (originalDataType.get().equalsIgnoreCase(DATETIME_TYPE)
+            || originalDataType.get().equalsIgnoreCase(TIMESTAMP_TYPE))) {
+          return buildDate(builder);
+        }
         return inferPrimitive(builder, getElasticsearchType(schemaType), schema.defaultValue());
     }
   }
@@ -151,6 +165,10 @@ public class Mapping {
       }
     }
     return builder.endObject();
+  }
+
+  private static XContentBuilder buildDate(XContentBuilder builder) throws IOException {
+    return inferPrimitive(builder, DATE_TYPE, null);
   }
 
   private static XContentBuilder inferPrimitive(
@@ -249,5 +267,12 @@ public class Mapping {
       default:
         return null;
     }
+  }
+
+  private static Optional<String> getSchemaParameter(Schema schema, String parameterName) {
+    if (!Objects.isNull(schema.parameters())) {
+      return Optional.ofNullable(schema.parameters().get(parameterName));
+    }
+    return Optional.empty();
   }
 }

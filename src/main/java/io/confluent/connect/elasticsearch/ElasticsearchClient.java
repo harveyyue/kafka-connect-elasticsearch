@@ -49,6 +49,9 @@ import org.elasticsearch.action.bulk.BulkProcessor;
 import org.elasticsearch.action.bulk.BulkProcessor.Listener;
 import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.bulk.BulkResponse;
+import org.elasticsearch.action.search.SearchRequest;
+import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.client.RestClient;
 import org.elasticsearch.client.RestClientBuilder;
@@ -63,6 +66,9 @@ import org.elasticsearch.client.indices.PutMappingRequest;
 import org.elasticsearch.cluster.metadata.MappingMetadata;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.index.VersionType;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -230,7 +236,27 @@ public class ElasticsearchClient {
         try {
           BulkResponse bulkResponse = callWithRetries(
               "execute bulk request",
-              () -> client.bulk(req, RequestOptions.DEFAULT)
+              () -> {
+                try {
+                  return client.bulk(req, RequestOptions.DEFAULT);
+                } catch (IOException e) {
+                  if (isResponseParseError(e)) {
+                    log.warn("Bulk request succeeded (HTTP 200) but response parsing failed "
+                            + "due to AWS ES compatibility issue. "
+                            + "Treating all {} items as successful, request description: {}. "
+                            + "Error message: {}",
+                        req.numberOfActions(), req.getDescription(), e.getMessage());
+                    for (DocWriteRequest<?> request : req.requests()) {
+                      SinkRecordAndOffset sro = requestToSinkRecord.get(request);
+                      if (sro != null) {
+                        sro.offsetState.markProcessed();
+                      }
+                    }
+                    return new BulkResponse(new BulkItemResponse[0], 0);
+                  }
+                  throw e;
+                }
+              }
           );
           lis.onResponse(bulkResponse);
         } catch (Exception ex) {
@@ -408,6 +434,40 @@ public class ElasticsearchClient {
   }
 
   /**
+   * Resolves the concrete index that holds the document with the given id under
+   * the supplied index pattern (typically something like {@code orders_*}).
+   *
+   * <p>This is used by time-sharded index naming when a delete tombstone arrives
+   * without the value needed to compute the target shard: the sink task searches
+   * across all time shards to locate the existing document and then issues a
+   * precise delete against the resolved index.
+   *
+   * @param indexPattern the wildcard index pattern to search (e.g. {@code base_*})
+   * @param id the document id to look up
+   * @return the concrete index name holding the document, or null if no match
+   */
+  public String resolveIndexForDocId(String indexPattern, String id) {
+    SearchRequest searchRequest = new SearchRequest(indexPattern)
+        .indicesOptions(IndicesOptions.lenientExpandOpen())
+        .source(new SearchSourceBuilder()
+            .query(QueryBuilders.idsQuery().addIds(id))
+            .size(1)
+            .fetchSource(false)
+            .trackTotalHits(false));
+    SearchResponse response = callWithRetries(
+        String.format("resolve index for id %s under pattern %s", id, indexPattern),
+        () -> client.search(searchRequest, RequestOptions.DEFAULT)
+    );
+    SearchHit[] hits = response.getHits().getHits();
+    if (hits.length > 1) {
+      log.warn(
+          "Found {} search results for index pattern {}, pick {} as active index",
+          hits.length, indexPattern, hits[0].getIndex());
+    }
+    return hits.length > 0 ? hits[0].getIndex() : null;
+  }
+
+  /**
    * Checks whether the index exists.
    *
    * @param index the index to check
@@ -441,11 +501,19 @@ public class ElasticsearchClient {
 
       @Override
       public void afterBulk(long executionId, BulkRequest request, BulkResponse response) {
+        if (response == null) {
+          // The buildConsumer method has processed the NPE
+          return;
+        }
         List<DocWriteRequest<?>> requests = request.requests();
 
         int idx = 0;
         for (BulkItemResponse bulkItemResponse : response) {
           DocWriteRequest<?> req = idx < requests.size() ? requests.get(idx) : null;
+          if (bulkItemResponse == null) {
+            // The buildConsumer method has processed the NPE
+            continue;
+          }
           boolean failed = handleResponse(bulkItemResponse, req, executionId);
           if (!failed && req != null) {
             requestToSinkRecord.get(req).offsetState.markProcessed();
@@ -460,7 +528,11 @@ public class ElasticsearchClient {
 
       @Override
       public void afterBulk(long executionId, BulkRequest request, Throwable failure) {
-        log.warn("Bulk request {} failed", executionId, failure);
+        log.warn(
+            "Bulk request {} failed, request description: {}",
+            executionId,
+            request.getDescription(),
+            failure);
         error.compareAndSet(null, new ConnectException("Bulk request failed", failure));
         bulkFinished(executionId, request);
       }
@@ -481,6 +553,25 @@ public class ElasticsearchClient {
         }
       }
     };
+  }
+
+  /**
+   * Checks if an IOException is caused by a response parsing failure due to AWS ES
+   * returning a bulk response body with missing fields (e.g., missing "result" in
+   * UpdateResponse), while the HTTP status was 200 OK.
+   */
+  private static boolean isResponseParseError(IOException e) {
+    String message = e.getMessage();
+    if (message != null && message.contains("Unable to parse response body")) {
+      Throwable cause = e.getCause();
+      while (cause != null) {
+        if (cause instanceof NullPointerException) {
+          return true;
+        }
+        cause = cause.getCause();
+      }
+    }
+    return false;
   }
 
   /**

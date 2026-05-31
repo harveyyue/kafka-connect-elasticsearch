@@ -34,6 +34,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.confluent.connect.elasticsearch.ElasticsearchSinkConnectorConfig.BehaviorOnNullValues;
+import io.confluent.connect.elasticsearch.strategy.IndexNamingStrategy;
 
 @SuppressWarnings("checkstyle:ClassDataAbstractionCoupling")
 public class ElasticsearchSinkTask extends SinkTask {
@@ -49,6 +50,7 @@ public class ElasticsearchSinkTask extends SinkTask {
   private OffsetTracker offsetTracker;
   private PartitionPauser partitionPauser;
   private ElasticsearchSinkMetrics esSinkMetrics;
+  private IndexNamingStrategy indexNamingStrategy;
 
   @Override
   public void start(Map<String, String> props) {
@@ -63,6 +65,7 @@ public class ElasticsearchSinkTask extends SinkTask {
     this.converter = new DataConverter(config);
     this.existingMappings = new HashSet<>();
     this.indexCache = new HashSet<>();
+    this.indexNamingStrategy = createIndexNamingStrategy();
     int offsetHighWaterMark = config.maxBufferedRecords() * 10;
     int offsetLowWaterMark = config.maxBufferedRecords() * 5;
     this.partitionPauser = new PartitionPauser(context,
@@ -157,77 +160,17 @@ public class ElasticsearchSinkTask extends SinkTask {
     }
   }
 
-  /**
-   * Returns the converted index name from a given topic name. Elasticsearch accepts:
-   * <ul>
-   *   <li>all lowercase</li>
-   *   <li>less than 256 bytes</li>
-   *   <li>does not start with - or _</li>
-   *   <li>is not . or ..</li>
-   * </ul>
-   * (<a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-create-index.html#indices-create-api-path-params">ref</a>_.)
-   */
-  private String convertTopicToIndexName(String topic) {
-    String index = topic.toLowerCase();
-    if (index.length() > 255) {
-      index = index.substring(0, 255);
+  private IndexNamingStrategy createIndexNamingStrategy() {
+    String className = config.indexNamingStrategy();
+    try {
+      Class<?> clazz = Class.forName(className);
+      IndexNamingStrategy strategy =
+          (IndexNamingStrategy) clazz.getDeclaredConstructor().newInstance();
+      strategy.configure(config);
+      return strategy;
+    } catch (Exception e) {
+      throw new ConnectException("Failed to instantiate index naming strategy: " + className, e);
     }
-
-    if (index.startsWith("-") || index.startsWith("_")) {
-      index = index.substring(1);
-    }
-
-    if (index.equals(".") || index.equals("..")) {
-      index = index.replace(".", "dot");
-      log.warn("Elasticsearch cannot have indices named {}. Index will be named {}.", topic, index);
-    }
-
-    if (!topic.equals(index)) {
-      log.trace("Topic '{}' was translated to index '{}'.", topic, index);
-    }
-
-    return index;
-  }
-
-  /**
-   * Returns the converted index name from a given topic name in the form {type}-{dataset}-{topic}.
-   * For the <code>topic</code>, Elasticsearch accepts:
-   * <ul>
-   *   <li>all lowercase</li>
-   *   <li>no longer than 100 bytes</li>
-   * </ul>
-   * (<a href="https://github.com/elastic/ecs/blob/master/rfcs/text/0009-data_stream-fields.md#restrictions-on-values">ref</a>_.)
-   */
-  private String convertTopicToDataStreamName(String topic) {
-    topic = topic.toLowerCase();
-    if (topic.length() > 100) {
-      topic = topic.substring(0, 100);
-    }
-    String dataStream = String.format(
-        "%s-%s-%s",
-        config.dataStreamType().name().toLowerCase(),
-        config.dataStreamDataset(),
-        topic
-    );
-    return dataStream;
-  }
-
-  /**
-   * Returns the converted index name from a given topic name. If writing to a data stream,
-   * returns the index name in the form {type}-{dataset}-{topic}. For both cases, Elasticsearch
-   * accepts:
-   * <ul>
-   *   <li>all lowercase</li>
-   *   <li>less than 256 bytes</li>
-   *   <li>does not start with - or _</li>
-   *   <li>is not . or ..</li>
-   * </ul>
-   * (<a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-create-index.html#indices-create-api-path-params">ref</a>_.)
-   */
-  private String createIndexName(String topic) {
-    return config.isDataStream()
-        ? convertTopicToDataStreamName(topic)
-        : convertTopicToIndexName(topic);
   }
 
   private void ensureIndexExists(String index) {
@@ -257,7 +200,16 @@ public class ElasticsearchSinkTask extends SinkTask {
   }
 
   private void tryWriteRecord(SinkRecord sinkRecord, OffsetState offsetState) {
-    String indexName = createIndexName(sinkRecord.topic());
+    String indexName = indexNamingStrategy.indexName(sinkRecord);
+
+    if (IndexNamingStrategy.isWildcard(indexName)) {
+      String resolved = resolveWildcardIndex(indexName, sinkRecord);
+      if (resolved == null) {
+        offsetState.markProcessed();
+        return;
+      }
+      indexName = resolved;
+    }
 
     ensureIndexExists(indexName);
     checkMapping(indexName, sinkRecord);
@@ -280,6 +232,36 @@ public class ElasticsearchSinkTask extends SinkTask {
       logTrace("Adding {} to bulk processor.", sinkRecord);
       client.index(sinkRecord, docWriteRequest, offsetState);
     }
+  }
+
+  /**
+   * Resolves a wildcard index pattern (e.g. {@code base_*}) returned by a
+   * time-based naming strategy for a delete tombstone whose value is null.
+   * Searches by doc id across matching shards and returns the concrete index,
+   * or null if the record should be skipped.
+   */
+  private String resolveWildcardIndex(String pattern, SinkRecord sinkRecord) {
+    if (sinkRecord.value() != null) {
+      throw new ConnectException(String.format(
+          "Index naming strategy returned wildcard pattern '%s' for a non-delete %s. "
+              + "Wildcard resolution is only supported for delete tombstones.",
+          pattern, recordString(sinkRecord)));
+    }
+    if (sinkRecord.key() == null) {
+      log.trace("Ignoring delete {} with null key under wildcard pattern {}.",
+          recordString(sinkRecord), pattern);
+      return null;
+    }
+    String id = converter.documentId(sinkRecord);
+    String resolved = client.resolveIndexForDocId(pattern, id);
+    if (resolved == null) {
+      log.info("No matching document for id '{}' under pattern '{}'; skipping delete for {}.",
+          id, pattern, recordString(sinkRecord));
+      return null;
+    }
+    log.debug("Resolved wildcard pattern '{}' to concrete index '{}' for delete of id '{}'.",
+        pattern, resolved, id);
+    return resolved;
   }
 
   private static String recordString(SinkRecord record) {

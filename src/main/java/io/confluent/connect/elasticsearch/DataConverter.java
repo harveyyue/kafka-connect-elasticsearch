@@ -136,6 +136,16 @@ public class DataConverter {
     }
   }
 
+  /**
+   * Computes the Elasticsearch document id for the given record, using the same
+   * rules as {@link #convertRecord(SinkRecord, String)}.
+   */
+  public String documentId(SinkRecord record) {
+    return config.shouldIgnoreKey(record.topic())
+        ? String.format("%s+%d+%d", record.topic(), record.kafkaPartition(), record.kafkaOffset())
+        : convertKey(record.keySchema(), record.key());
+  }
+
   public DocWriteRequest<?> convertRecord(SinkRecord record, String index) {
     if (record.value() == null) {
       switch (config.behaviorOnNullValues()) {
@@ -176,9 +186,7 @@ public class DataConverter {
       }
     }
 
-    final String id = config.shouldIgnoreKey(record.topic())
-        ? String.format("%s+%d+%d", record.topic(), record.kafkaPartition(), record.kafkaOffset())
-        : convertKey(record.keySchema(), record.key());
+    final String id = documentId(record);
 
     // delete
     if (record.value() == null) {
