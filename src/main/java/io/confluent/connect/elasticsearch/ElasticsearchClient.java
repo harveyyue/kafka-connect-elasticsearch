@@ -18,8 +18,10 @@ package io.confluent.connect.elasticsearch;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -359,7 +361,24 @@ public class ElasticsearchClient {
    */
   public boolean hasMapping(String index) {
     MappingMetadata mapping = mapping(index);
-    return mapping != null && mapping.sourceAsMap() != null && !mapping.sourceAsMap().isEmpty();
+    if (mapping == null || mapping.sourceAsMap() == null) {
+      return false;
+    }
+    Object properties = mapping.sourceAsMap().get("properties");
+    return properties instanceof Map && !((Map<?, ?>) properties).isEmpty();
+  }
+
+  @SuppressWarnings("unchecked")
+  public Set<String> getMappingFieldNames(String index) {
+    MappingMetadata mapping = mapping(index);
+    if (mapping == null || mapping.sourceAsMap() == null) {
+      return Collections.emptySet();
+    }
+    Object properties = mapping.sourceAsMap().get("properties");
+    if (properties instanceof Map) {
+      return ((Map<String, Object>) properties).keySet();
+    }
+    return Collections.emptySet();
   }
 
   /**

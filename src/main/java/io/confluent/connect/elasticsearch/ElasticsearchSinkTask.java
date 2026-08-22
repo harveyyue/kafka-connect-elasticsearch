@@ -16,13 +16,16 @@
 package io.confluent.connect.elasticsearch;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.sink.ErrantRecordReporter;
@@ -45,7 +48,7 @@ public class ElasticsearchSinkTask extends SinkTask {
   private ElasticsearchClient client;
   private ElasticsearchSinkConnectorConfig config;
   private ErrantRecordReporter reporter;
-  private Set<String> existingMappings;
+  private Map<String, Schema> existingMappings;
   private Set<String> indexCache;
   private OffsetTracker offsetTracker;
   private PartitionPauser partitionPauser;
@@ -63,7 +66,7 @@ public class ElasticsearchSinkTask extends SinkTask {
 
     this.config = new ElasticsearchSinkConnectorConfig(props);
     this.converter = new DataConverter(config);
-    this.existingMappings = new HashSet<>();
+    this.existingMappings = new HashMap<>();
     this.indexCache = new HashSet<>();
     this.indexNamingStrategy = createIndexNamingStrategy();
     int offsetHighWaterMark = config.maxBufferedRecords() * 10;
@@ -151,13 +154,45 @@ public class ElasticsearchSinkTask extends SinkTask {
   }
 
   private void checkMapping(String index, SinkRecord record) {
-    if (!config.shouldIgnoreSchema(record.topic()) && !existingMappings.contains(index)) {
-      if (!client.hasMapping(index)) {
-        client.createMapping(index, record.valueSchema());
-      }
-      log.debug("Caching mapping for index '{}' locally.", index);
-      existingMappings.add(index);
+    if (config.shouldIgnoreSchema(record.topic())) {
+      return;
     }
+
+    Schema valueSchema = record.valueSchema();
+    Schema cachedSchema = existingMappings.get(index);
+    // no schema changed
+    if (cachedSchema != null && Objects.equals(cachedSchema, valueSchema)) {
+      return;
+    }
+
+    if (!client.hasMapping(index)) {
+      client.createMapping(index, valueSchema);
+    } else if (cachedSchema != null && !Objects.equals(cachedSchema, valueSchema)
+        && hasNewFields(cachedSchema, valueSchema)) {
+      log.info("Schema changed for index '{}', updating mapping for new fields.", index);
+      client.createMapping(index, valueSchema);
+    } else if (cachedSchema == null && hasNewFieldsOverMapping(index, valueSchema)) {
+      log.info("Task restarted, index '{}' has new fields in schema, updating mapping.", index);
+      client.createMapping(index, valueSchema);
+    }
+    existingMappings.put(index, valueSchema);
+  }
+
+  private boolean hasNewFields(Schema cachedSchema, Schema newSchema) {
+    if (cachedSchema.fields() == null || newSchema.fields() == null) {
+      return false;
+    }
+    Set<String> cachedFieldNames = new HashSet<>();
+    cachedSchema.fields().forEach(f -> cachedFieldNames.add(f.name()));
+    return newSchema.fields().stream().anyMatch(f -> !cachedFieldNames.contains(f.name()));
+  }
+
+  private boolean hasNewFieldsOverMapping(String index, Schema newSchema) {
+    if (newSchema.fields() == null) {
+      return false;
+    }
+    Set<String> mappingFieldNames = client.getMappingFieldNames(index);
+    return newSchema.fields().stream().anyMatch(f -> !mappingFieldNames.contains(f.name()));
   }
 
   private IndexNamingStrategy createIndexNamingStrategy() {
